@@ -1,10 +1,14 @@
-int add(int a, int b) {
-  return a + b;
+/* int sum(int a, int b) { */
+/*   return a + b; */
+/* } */
+
+int double_inc(int x) {
+    // TODO: We want these 2 increments to be turned into x += 2;
+    x++;
+    x++;
+    return x;
 }
 
 int main(int argc, const char** argv) {
-    int a = 40;
-    int b = 2;
-    int sum = add(a, b);
     return 0;
 }
