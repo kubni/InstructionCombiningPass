@@ -52,17 +52,17 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                 Instruction* next_instruction = &BB.front();
                 for (auto &I : BB) {
                 // while(BasicBlock::iterator(next_instruction) != BB.end()) {
-                    // Skip initial allocas and stores:
 
-                    if(alloca_count && dyn_cast<StoreInst>(&I)) {
-                        alloca_count--;
-                        continue;
-                    }
+                    // Skip initial allocas and stores:
+                    // if(alloca_count && dyn_cast<StoreInst>(&I)) {
+                    //     alloca_count--;
+                    //     continue;
+                    // }
 
 
 
                     // Check if we have an `alloca` instruction:
-                    // if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
+                    if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
 
                         // Check if its for an integer:
                         // TODO: This will break the optimization if one of the function arguments is non-int...
