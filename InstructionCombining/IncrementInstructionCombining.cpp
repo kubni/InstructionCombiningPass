@@ -8,14 +8,17 @@ using namespace llvm;
 
 namespace {
 
-std::map<std::string, int> allocaCounts;
+std::map<std::string, int> AllocaCounts;
+std::map<std::string, int> AddCounts;
 std::vector<Instruction *> InstructionsToRemove;
+
+
 
 struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
             std::string func_name = F.getName().str();
-            errs() << "[AllocaCountPass] Currently analyzing " << func_name << "\n";
+            // errs() << "[AllocaCountPass] Currently analyzing " << func_name << "\n";
             for (auto &BB : F) {
                 Instruction* next_instruction = &BB.front();
                 while(true) {
@@ -23,7 +26,7 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
                     if (alloca_instr == nullptr)
                         break;
                     else {
-                        allocaCounts[func_name] += 1;
+                        AllocaCounts[func_name] += 1;
                         next_instruction = alloca_instr->getNextNonDebugInstruction();
                     }
                 }
@@ -35,71 +38,114 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
     }
 };
 
-struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
-    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
-
-        for (auto &F : M) {
-            errs() << "[InstructionCombiningPass] I saw a function called " << F.getName() << "!\n";
-            // LLVMContext &Ctx = F.getContext(); // TODO: Pass this to IR builder and combine it with builder.SetInsertPoint() ?
-
-            errs() << "Old IR: \n" << F << "\n";
-            errs() << "[InstructionCombiningPass] Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << " allocas and stores.\n";
-            int alloca_count = allocaCounts.at(F.getName().str());
-
-            for (auto &BB : F) {
-
-                // errs() << "BB: " << BB;
-
-                Instruction* next_instruction = &BB.front();
-                for (auto &I : BB) {
-                    // Skip initial allocas and stores:
-
-
-                    // if(alloca_count && dyn_cast<StoreInst>(&I)) {
-                    //     alloca_count--;
-                    //     continue;
-                    // }
-
-
-
-                    // Check if we have an `alloca` instruction:
-                    if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
-
-                        // Check if its for an integer:
-                        // TODO: This will break the optimization if one of the function arguments is non-int...
-                        if(alloca_instruction->getAllocatedType()->isIntegerTy()) {
-                            // Get the next instruction
-                            Instruction* next_instruction = alloca_instruction->getNextNonDebugInstruction();
-                            // Check if its a `store` instruction
-                            if (auto *store_instruction = dyn_cast<StoreInst>(next_instruction)) {
-                                // Grab the stored value
-                                Value* stored_value = store_instruction->getValueOperand(); // TODO: Unneeded?
-                                errs() << "Stored value: " << *stored_value << "\n";
-
-                                // .... In the next steps we do similar things to above
-                                next_instruction = store_instruction->getNextNonDebugInstruction();
-                                if (auto *load_instruction = dyn_cast<LoadInst>(next_instruction)) {
-                                    Value* loaded_value = load_instruction->getOperand(0);
-                                    errs() << "Loaded value: " << *loaded_value << "\n";
-
-                                    next_instruction = load_instruction->getNextNonDebugInstruction();
-                                    if(auto *op = dyn_cast<BinaryOperator>(next_instruction)) {
-                                        if (op->getOpcode() == Instruction::Add /*TODO: && op->hasOneUse()*/) {
-                                            // NOTE: Does nothing currently except print the IR again
-                                            errs() << "New IR: " << F << "\n";
-                                            // return PreservedAnalyses::none();
-                                        }
-                                    }
-                                }
-                            }
+struct AddCountPass : public PassInfoMixin<AddCountPass> {
+        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+            for (auto &F : M) {
+                for (auto &BB : F) {
+                    for (auto &I : BB) {
+                        if (auto *bin_op = dyn_cast<BinaryOperator>(&I)) {
+                            if (bin_op->getOpcode() == Instruction::Add)
+                                AddCounts[F.getName().str()] += 1;
                         }
-                    }
                     }
                 }
             }
-        return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
+        return PreservedAnalyses::all();
         }
-    };
+};
+
+struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstructionCombiningPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+
+        for (auto &F : M) {
+            // errs() << "[InstructionCombiningPass] I saw a function called " << F.getName() << "!\n";
+            // LLVMContext &Ctx = F.getContext(); // TODO: Pass this to IR builder and combine it with builder.SetInsertPoint() ?
+
+            errs() << "Old IR: \n" << F << "\n";
+            // errs() << "[InstructionCombiningPass] Func <" << F.getName() << ">  ->  " << AllocaCounts.at(F.getName().str()) << " allocas and stores.\n";
+
+            int initial_alloca_count = AllocaCounts.at(F.getName().str());
+            int initial_store_count = initial_alloca_count;
+            int initial_add_count = AddCounts.at(F.getName().str());
+            int tmp_add_count = initial_add_count;
+
+            std::vector<int> initial_store_values(initial_store_count);
+            bool isMainStoreSkipped = false;
+            bool isFirstLoadSaved = false;
+            Value* new_add = nullptr;
+            Value* first_loaded_value = nullptr;
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    // Skip initial allocas:
+                    if (initial_alloca_count) {
+                        initial_alloca_count--;
+                        continue;
+                    }
+                   
+                    // NOTE: Specially for main(), there is an additional store (always the first store coming after allocas) that we want to skip
+                    if (F.getName().str() == "main" && !isMainStoreSkipped) {
+                        isMainStoreSkipped = true;
+                        initial_store_count--;
+                        continue;
+                    }
+                    // Save the store values:
+                    if(initial_store_count) {
+                        if (auto *store_instruction = dyn_cast<StoreInst>(&I)) {
+                            Value* stored_value = store_instruction->getValueOperand();
+                            // errs() << "Stored value: " << *stored_value << "\n";
+                            initial_store_count--;
+                            continue;
+                        }
+                    }
+
+                    // Save the first load value (that will be the variable that we increment later)
+                    if (!isFirstLoadSaved) {
+                        if (auto *load_instr = dyn_cast<LoadInst>(&I)) {
+                            first_loaded_value = load_instr->getOperand(0);
+                            isFirstLoadSaved = true;
+                            continue;
+                        }
+
+                    }
+                    // Now we loop through the instructions until we get to the last add.
+                    // We kinda broke the load-store-add pattern here but it doesn't matter.
+
+                    if(tmp_add_count) {
+                        if (auto *binary_op = dyn_cast<BinaryOperator>(&I)) {
+                            if (binary_op->getOpcode() == Instruction::Add) {
+                                // If we are on our last ADD operation, we use its context to create our new improved add which will replace everything later.
+                                // TODO: Is is really necessary for this to be here?
+                                if (tmp_add_count == 1) {
+                                    IRBuilder<> builder(binary_op);
+                                    new_add = builder.CreateAdd(first_loaded_value, ConstantInt::get(Type::getInt32Ty(binary_op->getContext()), initial_add_count));
+
+                                    // We replace the final add with our improved add.
+                                    binary_op->replaceAllUsesWith(new_add);
+                                    // errs() << "New add: " << *new_add << "\n";
+                                }
+                                tmp_add_count--;
+                            }
+                        }
+                        InstructionsToRemove.push_back(&I);
+                        continue;
+                    }
+                }
+
+                // Finally, we erase all the instructions that are queued for erasure:
+                for (Instruction* instr : InstructionsToRemove) {
+                    if(instr->isSafeToRemove())
+                        instr->eraseFromParent();
+                }
+            }
+            // Print tne new IR
+            errs() << "New IR: \n" << F << "\n";
+
+
+            // TODO: Verify that it is valid IR.
+        }
+        return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
+    }
+};
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
@@ -111,7 +157,8 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                     MPM.addPass(AllocaCountPass());
-                    MPM.addPass(InstructionCombiningPass());
+                    MPM.addPass(AddCountPass());
+                    MPM.addPass(IncrementInstructionCombiningPass());
                 });
         }
     };
