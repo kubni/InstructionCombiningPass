@@ -16,26 +16,21 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
             std::string func_name = F.getName().str();
             errs() << "[AllocaCountPass] Currently analyzing " << func_name << "\n";
             for (auto &BB : F) {
-                for (auto &I : BB) {
-                    Instruction* next_instruction = &I;
-                    while(true) {
-                        // errs() << "Hello world from AllocaCountPass";
-                        auto *alloca_instr = dyn_cast<AllocaInst>(next_instruction);
-                        if (alloca_instr == nullptr)
-                            // return PreservedAnalyses::all(); // NOTE: Doing this only counts correctly for the first analyzed function
-                            break;
-                        else {
-                            allocaCounts[func_name] += 1;
-                            next_instruction = alloca_instr->getNextNonDebugInstruction();
-                        }
+                Instruction* next_instruction = &BB.front();
+                while(true) {
+                    auto *alloca_instr = dyn_cast<AllocaInst>(next_instruction);
+                    if (alloca_instr == nullptr)
+                        break;
+                    else {
+                        allocaCounts[func_name] += 1;
+                        next_instruction = alloca_instr->getNextNonDebugInstruction();
                     }
-                    break; // TODO: Remove this for (auto &I : BB) since we always just want the first one (or more specifically the first sequence of allocas)
                 }
                 break; // TODO: What if we have multiple basic blocks in a function? Are the allocas still at the beginning? FIXME (Currently we ignore that completely even if they are...)
             }
         }
         return PreservedAnalyses::all();
-    };
+    }
 };
 
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
@@ -46,14 +41,7 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
             // LLVMContext &Ctx = F.getContext(); // TODO: Pass this to IR builder and combine it with builder.SetInsertPoint() ?
 
             errs() << "Old IR: \n" << F << "\n";
-
-             /*   TODO: Pattern is actually load-add-store
-             *         Before that, we have alloca and store for each function argument. This needs to be separate
-             *        
-             *
-             */
-
-            errs() << "Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << "\n";
+            errs() << "Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << " allocas and stores.\n";
 
 
 
@@ -78,7 +66,7 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                                 if (auto *load_instruction = dyn_cast<LoadInst>(next_instruction)) {
                                     Value* loaded_value = load_instruction->getOperand(0);
                                     errs() << "Loaded value: " << *loaded_value << "\n";
-                                   
+
                                     next_instruction = load_instruction->getNextNonDebugInstruction();
                                     if(auto *op = dyn_cast<BinaryOperator>(next_instruction)) {
                                         if (op->getOpcode() == Instruction::Add /*TODO: && op->hasOneUse()*/) {
