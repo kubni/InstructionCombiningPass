@@ -1,10 +1,8 @@
-/* int sum(int a, int b) { */
-/*   return a + b; */
-/* } */
-
 int double_inc(int x) {
     // TODO: We want these 2 increments to be turned into x += 2;
+    /* int y = 0; */
     x++;
+    /* y++; */
     x++;
     return x;
 }

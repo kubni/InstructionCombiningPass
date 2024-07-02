@@ -3,23 +3,40 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <map>  // TODO: Unordered map?
 using namespace llvm;
 
 namespace {
 
+std::map<std::string, int> allocaCounts;
 
-/* Example of one increment in LLVM IR:
- *
-    %2 = alloca i32, align 4             // Allocate space on stack for an int
-    store i32 %0, ptr %2, align 4        // Store the value in %0 (function argument) to the space pointed to by %2
-    %3 = load i32, ptr %2, align 4       // Load the value from the memory pointed to by %2 into %3
-    %4 = add nsw i32 %3, 1               // Add/Increment the value in %3 by 1 and store it into %4
- *
- *
- * */
-
-
-
+struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        for (auto &F : M) {
+            std::string func_name = F.getName().str();
+            errs() << "[AllocaCountPass] Currently analyzing " << func_name << "\n";
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    Instruction* next_instruction = &I;
+                    while(true) {
+                        // errs() << "Hello world from AllocaCountPass";
+                        auto *alloca_instr = dyn_cast<AllocaInst>(next_instruction);
+                        if (alloca_instr == nullptr)
+                            // return PreservedAnalyses::all(); // NOTE: Doing this only counts correctly for the first analyzed function
+                            break;
+                        else {
+                            allocaCounts[func_name] += 1;
+                            next_instruction = alloca_instr->getNextNonDebugInstruction();
+                        }
+                    }
+                    break; // TODO: Remove this for (auto &I : BB) since we always just want the first one (or more specifically the first sequence of allocas)
+                }
+                break; // TODO: What if we have multiple basic blocks in a function? Are the allocas still at the beginning? FIXME (Currently we ignore that completely even if they are...)
+            }
+        }
+        return PreservedAnalyses::all();
+    };
+};
 
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
@@ -30,21 +47,31 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
 
             errs() << "Old IR: \n" << F << "\n";
 
+             /*   TODO: Pattern is actually load-add-store
+             *         Before that, we have alloca and store for each function argument. This needs to be separate
+             *        
+             *
+             */
+
+            errs() << "Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << "\n";
+
+
+
             for (auto &BB : F) {
-                // TODO: DO we need to loop through all instructions if we check each one to see if its alloca inst and then 3 after it? Can't we check them in batches if I is indeed an alloca?
                 for (auto &I : BB) {
-                    // TODO: Move this into separate function (specifically for increments)
+
                     // Check if we have an `alloca` instruction:
                     if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
                         // Check if its for an integer:
+                        // TODO: This will break the optimization if one of the function arguments is non-int...
                         if(alloca_instruction->getAllocatedType()->isIntegerTy()) {
                             // Get the next instruction
                             Instruction* next_instruction = alloca_instruction->getNextNonDebugInstruction();
                             // Check if its a `store` instruction
                             if (auto *store_instruction = dyn_cast<StoreInst>(next_instruction)) {
                                 // Grab the stored value
-                                // Value* stored_value = store_instruction->getValueOperand(); // TODO: Unneeded?
-                                // errs() << "Stored value: " << *stored_value << "\n";
+                                Value* stored_value = store_instruction->getValueOperand(); // TODO: Unneeded?
+                                errs() << "Stored value: " << *stored_value << "\n";
 
                                 // .... In the next steps we do similar things to above
                                 next_instruction = store_instruction->getNextNonDebugInstruction();
@@ -55,57 +82,9 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                                     next_instruction = load_instruction->getNextNonDebugInstruction();
                                     if(auto *op = dyn_cast<BinaryOperator>(next_instruction)) {
                                         if (op->getOpcode() == Instruction::Add /*TODO: && op->hasOneUse()*/) {
-
-
-                                            // WIP -- testing ----
-                                            IRBuilder<> builder(op); // TODO: op passed as context to builder?
-
-                                            Value *new_add = builder.CreateAdd(loaded_value, ConstantInt::get(op->getType(), 42));
-                                            errs() << "New add: " << *new_add << "\n\n"; // This seems okay
-
-                                            op->replaceAllUsesWith(new_add); // TODO: Doesn't replace all uses? Only the first one. Probably because each add has different  temp variables in it.
-                                            op->removeFromParent();
-
-
-                                            // What is problematic is that probably tmp variables that are generated by these instructions in one batch aren't visible in next batches if we remove instructions.
-                                                  /**
-                                                   *    When we have the following:
-                                                   *   
-                                                                %2 = alloca i32, align 4
-                                                                store i32 %0, ptr %2, align 4
-                                                                %3 = load i32, ptr %2, align 4
-                                                                %4 = add nsw i32 %3, 1
-                                                                store i32 %4, ptr %2, align 4
-                                                                %5 = load i32, ptr %2, align 4
-                                                                %6 = add nsw i32 %5, 1
-
-                                                        and do the removals below, we get this:
-
-                                                                %2 = add ptr <badref>, i32 42
-                                                                store ptr %2, ptr <badref>, align 4
-                                                                %3 = load i32, ptr <badref>, align 4
-                                                                %4 = add nsw i32 %3, 1
-
-                                                        The first increment batch was replaced with a single add (new_add), but that also messed up next batch, since the next batch also used temp. variables generated by those deleted instructions
-                                                   *
-                                                   *    NOTE: Possible fix:
-                                                   *                        - Don't delete instructions until all batches have been replaced with one add instruction.
-                                                   */
-
-
-                                            // NOTE: Removing these instructions here will lead to <badref> in next increment batches
-                                            //       Read the comment above
-                                            // load_instruction->removeFromParent();
-                                            // store_instruction->removeFromParent();
-                                            // alloca_instruction->removeFromParent();
-
-
-
+                                            // NOTE: Does nothing currently except print the IR again
                                             errs() << "New IR: " << F << "\n";
-
-
-                                            ///
-                                            return PreservedAnalyses::none();
+                                            // return PreservedAnalyses::none();
                                         }
                                     }
                                 }
@@ -132,6 +111,7 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
+                    MPM.addPass(AllocaCountPass());
                     MPM.addPass(InstructionCombiningPass());
                 });
         }
