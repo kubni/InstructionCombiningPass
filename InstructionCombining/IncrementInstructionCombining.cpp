@@ -2,6 +2,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Verifier.h"
 
 #include <map>  // TODO: Unordered map?
 using namespace llvm;
@@ -58,11 +59,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
 
         for (auto &F : M) {
-            // errs() << "[InstructionCombiningPass] I saw a function called " << F.getName() << "!\n";
-            // LLVMContext &Ctx = F.getContext(); // TODO: Pass this to IR builder and combine it with builder.SetInsertPoint() ?
-
             errs() << "Old IR: \n" << F << "\n";
-            // errs() << "[InstructionCombiningPass] Func <" << F.getName() << ">  ->  " << AllocaCounts.at(F.getName().str()) << " allocas and stores.\n";
 
             int initial_alloca_count = AllocaCounts.at(F.getName().str());
             int initial_store_count = initial_alloca_count;
@@ -101,7 +98,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                     // Save the first load value (that will be the variable that we increment later)
                     if (!isFirstLoadSaved) {
                         if (auto *load_instr = dyn_cast<LoadInst>(&I)) {
-                            first_loaded_value = load_instr->getOperand(0);
+                            first_loaded_value = load_instr;
                             isFirstLoadSaved = true;
                             continue;
                         }
@@ -117,6 +114,8 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                                 // TODO: Is is really necessary for this to be here?
                                 if (tmp_add_count == 1) {
                                     IRBuilder<> builder(binary_op);
+
+                                    // FIXME: This is adding ptr %2 and i32 initial_addcount which isn't valid.
                                     new_add = builder.CreateAdd(first_loaded_value, ConstantInt::get(Type::getInt32Ty(binary_op->getContext()), initial_add_count));
 
                                     // We replace the final add with our improved add.
@@ -140,13 +139,19 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
             // Print tne new IR
             errs() << "New IR: \n" << F << "\n";
 
+            // Verify that it is valid IR.
+            if (verifyFunction(F, &errs()))
+                errs() << "Function " << F.getName() << " is invalid!\n";
+            else
+                errs() << "Function " << F.getName() << " is valid!\n";
 
-            // TODO: Verify that it is valid IR.
         }
-        return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
+
+        return PreservedAnalyses::none();  // TODO: Change this if we go back to the old pass manager
     }
 };
 }
+
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
