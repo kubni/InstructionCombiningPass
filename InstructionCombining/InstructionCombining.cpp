@@ -27,6 +27,7 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
                     }
                 }
                 break; // TODO: What if we have multiple basic blocks in a function? Are the allocas still at the beginning? FIXME (Currently we ignore that completely even if they are...)
+                                // NOTE: The allocas still happen at the beginning of the function, though it seems that the store instruction happens in the branch, which makes sense, but breaks our algorithm FIXME.
             }
         }
         return PreservedAnalyses::all();
@@ -37,19 +38,32 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
 
         for (auto &F : M) {
-            errs() << "I saw a function called " << F.getName() << "!\n";
+            errs() << "[InstructionCombiningPass] I saw a function called " << F.getName() << "!\n";
             // LLVMContext &Ctx = F.getContext(); // TODO: Pass this to IR builder and combine it with builder.SetInsertPoint() ?
 
             errs() << "Old IR: \n" << F << "\n";
-            errs() << "Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << " allocas and stores.\n";
-
-
+            errs() << "[InstructionCombiningPass] Func <" << F.getName() << ">  ->  " << allocaCounts.at(F.getName().str()) << " allocas and stores.\n";
+            int alloca_count = allocaCounts.at(F.getName().str());
 
             for (auto &BB : F) {
+
+                // errs() << "BB: " << BB;
+
+                Instruction* next_instruction = &BB.front();
                 for (auto &I : BB) {
+                // while(BasicBlock::iterator(next_instruction) != BB.end()) {
+                    // Skip initial allocas and stores:
+
+                    if(alloca_count && dyn_cast<StoreInst>(&I)) {
+                        alloca_count--;
+                        continue;
+                    }
+
+
 
                     // Check if we have an `alloca` instruction:
-                    if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
+                    // if (auto *alloca_instruction = dyn_cast<AllocaInst>(&I)) {
+
                         // Check if its for an integer:
                         // TODO: This will break the optimization if one of the function arguments is non-int...
                         if(alloca_instruction->getAllocatedType()->isIntegerTy()) {

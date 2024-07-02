@@ -1,9 +1,17 @@
 int double_inc(int x) {
-    // TODO: We want these 2 increments to be turned into x += 2;
     /* int y = 0; */
     x++;
     /* y++; */
     x++;
+
+    /* if(y == 0) { */
+    /*     y++; */
+    /* } */
+
+    /* if (x == 0) { */
+    /*     int z = 0;    // TODO: This should be combined into int z = 1; */
+    /*     z++; */
+    /* } */
     return x;
 }
 
