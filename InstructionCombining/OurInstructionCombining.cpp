@@ -7,8 +7,26 @@
 using namespace llvm;
 
 namespace {
+std::vector<Instruction *> InstructionsToRemove;
+std::map<Value*, Value*> ValuesMap;
+// std::map<int, int> addInstrCount;
 
-std::map<std::string, int> allocaCounts;
+int addInstrCount = 0;
+
+struct AddInstrCountPass : public PassInfoMixin<AddInstrCountPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        for (auto &F : M) {
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if(isa<AddOperator>(I)) {
+                        addInstrCount++;
+                    }   
+                }
+            }
+        }
+        return PreservedAnalyses::all();
+    }
+};
 
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
@@ -16,7 +34,36 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
         for (auto &F : M) {
             for (auto &BB : F) {
                 for (auto &I : BB) {
-      
+                    if(LoadInst *LoadInstr  = dyn_cast<LoadInst>(&I)) {
+                        ValuesMap[LoadInstr] = LoadInstr->getOperand(0);
+                    }
+                    if (BinaryOperator *BinaryOp = dyn_cast<BinaryOperator>(&I)) {
+
+                    }
+                    // errs() << "Inst: " <<  I.getnam << "\n";
+                        //   %1 = alloca i32, align 4
+                        //   %2 = alloca i32, align 4
+                        //   %3 = alloca i32, align 4
+                        //   %4 = alloca i32, align 4
+                        //   store i32 0, i32* %1, align 4
+                        //   store i32 1, i32* %2, align 4
+                        //   %5 = load i32, i32* %2, align 4
+                        //   %6 = add nsw i32 %5, 1
+                        //   store i32 %6, i32* %3, align 4
+                        //   %7 = load i32, i32* %3, align 4
+                        //   %8 = add nsw i32 %7, 1
+                        //   store i32 %8, i32* %4, align 4
+                        //   ret i32 0
+                        // ################
+                        //   %1 = alloca i32, align 4
+                        //   %2 = alloca i32, align 4
+                        //   %3 = alloca i32, align 4
+                        //   store i32 0, i32* %1, align 4
+                        //   store i32 1, i32* %2, align 4
+                        //   %4 = load i32, i32* %2, align 4
+                        //   %5 = add nsw i32 %4, 2
+                        //   store i32 %5, i32* %3, align 4
+                        //   ret i32 0
                     }
                 }
             }
@@ -33,6 +80,7 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
+                    MPM.addPass(AddInstrCountPass()),
                     MPM.addPass(InstructionCombiningPass());
                 });
         }
