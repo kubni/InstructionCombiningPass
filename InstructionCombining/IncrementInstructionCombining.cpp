@@ -9,6 +9,7 @@ using namespace llvm;
 namespace {
 
 std::map<std::string, int> allocaCounts;
+std::vector<Instruction *> InstructionsToRemove;
 
 struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
@@ -51,9 +52,9 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
 
                 Instruction* next_instruction = &BB.front();
                 for (auto &I : BB) {
-                // while(BasicBlock::iterator(next_instruction) != BB.end()) {
-
                     // Skip initial allocas and stores:
+
+
                     // if(alloca_count && dyn_cast<StoreInst>(&I)) {
                     //     alloca_count--;
                     //     continue;
@@ -90,19 +91,15 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                                         }
                                     }
                                 }
-
                             }
                         }
-
-
+                    }
                     }
                 }
             }
-        }
         return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
+        }
     };
-};
-
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
