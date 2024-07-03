@@ -15,6 +15,58 @@ std::vector<Instruction *> InstructionsToRemove;
 
 
 
+// This pass moves constants to RHS in a binary operation
+struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+
+        for (auto &F : M) {
+            errs() << "Old IR: " << F << "\n";
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    if(auto* binary_op = dyn_cast<BinaryOperator>(&I)) {
+                        // We only do a move to RHS if we have Mul or Add
+                        auto opcode = binary_op->getOpcode();
+                        Value* op1 = binary_op->getOperand(0);
+                        Value* op2 = binary_op->getOperand(1);
+                        switch(opcode) {
+                            case Instruction::Add:
+                                if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
+                                    IRBuilder<> builder(binary_op);
+                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
+                                    Value* new_add = builder.CreateAdd(op2, op1);
+                                    binary_op->replaceAllUsesWith(new_add);
+                                    InstructionsToRemove.push_back(binary_op);
+                                }
+                                break;
+                            case Instruction::Mul:
+                                if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
+                                    IRBuilder<> builder(binary_op);
+                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
+                                    Value* new_mul = builder.CreateMul(op2, op1);
+                                    binary_op->replaceAllUsesWith(new_mul);
+                                    InstructionsToRemove.push_back(binary_op);
+                                }
+                                break;
+
+                            default:
+                                continue;
+                        }
+                    }
+                }
+            }
+            for (Instruction* i : InstructionsToRemove) {
+                i->eraseFromParent();
+            }
+           // We also need to remove the instruction from the vector, in order for it to be clean for next passes to use.
+           InstructionsToRemove.clear();
+           // InstructionsToRemove.shrink_to_fit();
+           errs() << "New IR: " << F << "\n";
+        }
+        return PreservedAnalyses::none();
+    }
+};
+
+
 struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
@@ -215,10 +267,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
 
                 // Finally, we erase all the instructions that are queued for erasure:
                 for (Instruction* instr : InstructionsToRemove) {
-                    // if(instr->isSafeToRemove()) {
-                        // errs() << "Instruction to be SAFELY removed: " << *instr << "\n";
                     instr->eraseFromParent();
-                    // }
                 }
             }
             // Print tne new IR
@@ -246,9 +295,10 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    MPM.addPass(AllocaCountPass());
-                    MPM.addPass(PatternCountPass());
-                    MPM.addPass(IncrementInstructionCombiningPass());
+                    // MPM.addPass(AllocaCountPass());
+                    // MPM.addPass(PatternCountPass());
+                    // MPM.addPass(IncrementInstructionCombiningPass());
+                    MPM.addPass(RHSMovePass());
                 });
         }
     };

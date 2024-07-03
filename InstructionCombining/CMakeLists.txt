@@ -1,6 +1,6 @@
 add_llvm_library( LLVMOurPass MODULE
-  OurInstructionCombining.cpp
   IncrementInstructionCombining.cpp
+  OurInstructionCombining.cpp
 
   PLUGIN_TOOL
   opt
