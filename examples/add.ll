@@ -7,14 +7,28 @@ target triple = "x86_64-pc-linux-gnu"
 define dso_local i32 @main() #0 {
   %1 = alloca i32, align 4
   %2 = alloca i32, align 4
+  %3 = alloca i32, align 4
   store i32 0, ptr %1, align 4
   store i32 0, ptr %2, align 4
-  %3 = load i32, ptr %2, align 4
-  %4 = add nsw i32 %3, 1
-  store i32 %4, ptr %2, align 4
-  %5 = load i32, ptr %2, align 4
-  %6 = add nsw i32 %5, 1
-  store i32 %6, ptr %2, align 4
+  store i32 0, ptr %3, align 4
+  %4 = load i32, ptr %2, align 4
+  %5 = add nsw i32 %4, 1
+  store i32 %5, ptr %2, align 4
+  %6 = load i32, ptr %3, align 4
+  %7 = add nsw i32 %6, 1
+  store i32 %7, ptr %3, align 4
+  %8 = load i32, ptr %3, align 4
+  %9 = add nsw i32 %8, 1
+  store i32 %9, ptr %3, align 4
+  %10 = load i32, ptr %2, align 4
+  %11 = add nsw i32 %10, 1
+  store i32 %11, ptr %2, align 4
+  %12 = load i32, ptr %2, align 4
+  %13 = add nsw i32 %12, 1
+  store i32 %13, ptr %2, align 4
+  %14 = load i32, ptr %3, align 4
+  %15 = add nsw i32 %14, 1
+  store i32 %15, ptr %3, align 4
   ret i32 0
 }
 
