@@ -201,6 +201,47 @@ struct ReplaceSameOperandsAddWithShlPass : public PassInfoMixin<ReplaceSameOpera
     }
 };
 
+struct ReplacePowerOfTwoMullWithShlPass : public PassInfoMixin<ReplacePowerOfTwoMullWithShlPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:\n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if(BinaryOperator* BinaryOp = dyn_cast<BinaryOperator>(&I)) {
+                        IRBuilder<> Builder(&I);
+                        if(BinaryOp->getOpcode() == Instruction::Mul) {
+                            Value *op1 = BinaryOp->getOperand(0);
+                            Value *op2 = BinaryOp->getOperand(1);
+                            if(ConstantInt *constOp = dyn_cast<ConstantInt>(op2)) {
+                                if (constOp->getValue().isPowerOf2()) {
+                                    unsigned int shiftAmount = constOp->getValue().logBase2();
+                                    Value *shiftInstr = Builder.CreateShl(op1, shiftAmount);
+                                    I.replaceAllUsesWith(shiftInstr);
+                                    InstructionsToRemove.push_back(&I);
+                                    changed = true;
+                                }
+                            }
+
+                        }
+
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+            
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -299,7 +340,8 @@ llvmGetPassPluginInfo() {
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                     // MPM.addPass(ConvertCompareInstructionsPass()),
                     // MPM.addPass(ReplaceCompareInstructionsPass()),
-                    MPM.addPass(ReplaceSameOperandsAddWithShlPass());
+                    // MPM.addPass(ReplaceSameOperandsAddWithShlPass()),
+                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
                     // MPM.addPass(AddInstrCountPass()),
                     // MPM.addPass(InstructionCombiningPass());
                 });
