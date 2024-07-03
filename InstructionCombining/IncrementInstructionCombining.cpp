@@ -3,6 +3,7 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/Verifier.h"
+#include <llvm/IR/IRBuilder.h>
 
 #include <map>  // TODO: Unordered map?
 using namespace llvm;

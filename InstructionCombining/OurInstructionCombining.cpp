@@ -50,6 +50,8 @@ void mapVariables(Function &F) {
 //3.
 struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
         for (auto &F : M) {
             errs() << "Old IR: \n" << F << "\n";
             for (auto &BB : F) {
@@ -92,6 +94,7 @@ struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstr
                         if (NewInstr) {
                             CmpInstr->replaceAllUsesWith(NewInstr);
                             InstructionsToRemove.push_back(CmpInstr);
+                            changed = true;
                         }
                     }
                 }
@@ -101,15 +104,19 @@ struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstr
             }
             errs() << "New IR: \n" << F << "\n";
         }
+        if(changed)
+            return PreservedAnalyses::none();
         return PreservedAnalyses::all();
     }
 };
 
 struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
         for (auto &F : M) {
             mapVariables(F);
-            errs() << "Old IR:aaa \n" << F << "\n";
+            errs() << "Old IR:\n" << F << "\n";
             for (auto &BB : F) {
                 for(auto &I : BB) {
                     if (auto *CmpInstr = dyn_cast<ICmpInst>(&I)) {
@@ -118,18 +125,18 @@ struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstr
                         Value *RHS = CmpInstr->getOperand(1);
                         Value *NewInstr = nullptr;
 
-                        errs() << "ASds" << *ValuesMap[LHS]->getType() << "\n";
+                        // errs() << "ASds" << *ValuesMap[LHS]->getType() << "\n";
                         // Check if the comparison is on boolean values (i8) in c
                         if (ValuesMap[LHS]->getType()->isIntegerTy(1) && ValuesMap[RHS]->getType()->isIntegerTy(1)) {
-                            errs() << "aaa" << "\n";
+                            // errs() << "aaa" << "\n";
                             switch (CmpInstr->getPredicate()) {
                             case ICmpInst::ICMP_EQ:
-                                // x == y can be replaced with x && y 
-                                NewInstr = Builder.CreateAnd(LHS, RHS);
+                                // x == y can be replaced with !(x ^ y )
+                                NewInstr =  Builder.CreateNot(Builder.CreateXor(LHS, RHS));
                                 break;
                             case ICmpInst::ICMP_NE:
-                                // x != y can be replaced with x || y
-                                NewInstr = Builder.CreateOr(LHS, RHS);
+                                // x != y can be replaced with (x ^ y )
+                                NewInstr = Builder.CreateXor(LHS, RHS);
                                 break;
                             default:
                                 break;
@@ -139,6 +146,7 @@ struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstr
                         if (NewInstr) {
                             CmpInstr->replaceAllUsesWith(NewInstr);
                             InstructionsToRemove.push_back(CmpInstr);
+                            changed = true;
                             // CmpInstr->eraseFromParent();
 
                         }
@@ -149,8 +157,46 @@ struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstr
             for (Instruction *Instr : InstructionsToRemove) {
                  Instr->eraseFromParent();
             }
+            
             errs() << "New IR: \n" << F << "\n";
         }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+
+struct ReplaceSameOperandsAddWithShlPass : public PassInfoMixin<ReplaceSameOperandsAddWithShlPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:\n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if(BinaryOperator* BinaryOp = dyn_cast<BinaryOperator>(&I)) {
+                        IRBuilder<> Builder(&I);
+                        if(BinaryOp->getOpcode() == Instruction::Add) {
+                            if(ValuesMap[BinaryOp->getOperand(0)] == ValuesMap[BinaryOp->getOperand(1)]) {
+                                Value *shiftInstr = Builder.CreateShl(BinaryOp->getOperand(0), 1);
+                                I.replaceAllUsesWith(shiftInstr);
+                                InstructionsToRemove.push_back(&I);
+                                changed= true;
+                            }
+
+                        }
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+            
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
         return PreservedAnalyses::all();
     }
 };
@@ -252,7 +298,8 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                     // MPM.addPass(ConvertCompareInstructionsPass()),
-                    MPM.addPass(ReplaceCompareInstructionsPass());
+                    // MPM.addPass(ReplaceCompareInstructionsPass()),
+                    MPM.addPass(ReplaceSameOperandsAddWithShlPass());
                     // MPM.addPass(AddInstrCountPass()),
                     // MPM.addPass(InstructionCombiningPass());
                 });
