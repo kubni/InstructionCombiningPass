@@ -40,10 +40,14 @@ void mapVariables(Function &F) {
             if(isa<StoreInst>(&I)) {
                 ValuesMap[I.getOperand(0)] = I.getOperand(1);
             }
+            if(isa<ZExtInst>(&I)) {
+                ValuesMap[&I] = I.getOperand(0);
+            }
         }
     }
 }
 
+//3.
 struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
@@ -90,6 +94,56 @@ struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstr
                             InstructionsToRemove.push_back(CmpInstr);
                         }
                     }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+            errs() << "New IR: \n" << F << "\n";
+        }
+        return PreservedAnalyses::all();
+    }
+};
+
+struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstructionsPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:aaa \n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if (auto *CmpInstr = dyn_cast<ICmpInst>(&I)) {
+                        IRBuilder<> Builder(CmpInstr);
+                        Value *LHS = CmpInstr->getOperand(0);
+                        Value *RHS = CmpInstr->getOperand(1);
+                        Value *NewInstr = nullptr;
+
+                        errs() << "ASds" << *ValuesMap[LHS]->getType() << "\n";
+                        // Check if the comparison is on boolean values (i8) in c
+                        if (ValuesMap[LHS]->getType()->isIntegerTy(1) && ValuesMap[RHS]->getType()->isIntegerTy(1)) {
+                            errs() << "aaa" << "\n";
+                            switch (CmpInstr->getPredicate()) {
+                            case ICmpInst::ICMP_EQ:
+                                // x == y can be replaced with x && y 
+                                NewInstr = Builder.CreateAnd(LHS, RHS);
+                                break;
+                            case ICmpInst::ICMP_NE:
+                                // x != y can be replaced with x || y
+                                NewInstr = Builder.CreateOr(LHS, RHS);
+                                break;
+                            default:
+                                break;
+                            }
+                        }
+
+                        if (NewInstr) {
+                            CmpInstr->replaceAllUsesWith(NewInstr);
+                            InstructionsToRemove.push_back(CmpInstr);
+                            // CmpInstr->eraseFromParent();
+
+                        }
+                    
+                     }
                 }
             }
             for (Instruction *Instr : InstructionsToRemove) {
@@ -197,7 +251,8 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    MPM.addPass(ConvertCompareInstructionsPass());
+                    // MPM.addPass(ConvertCompareInstructionsPass()),
+                    MPM.addPass(ReplaceCompareInstructionsPass());
                     // MPM.addPass(AddInstrCountPass()),
                     // MPM.addPass(InstructionCombiningPass());
                 });
