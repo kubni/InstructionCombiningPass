@@ -323,34 +323,21 @@ struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
                         Instruction* next_instruction = I.getNextNonDebugInstruction();
                         if (auto *binary_op = dyn_cast<BinaryOperator>(next_instruction)) {
                             if(binary_op->getOpcode() == Instruction::Add) {
-
+                                // Save the second add operand, so that we can support combining for += 2 or += <something> instead of just ++.
+                                Value* right_operand = binary_op->getOperand(1);
                                 next_instruction = next_instruction->getNextNonDebugInstruction();
                                 if (auto *store_instruction = dyn_cast<StoreInst>(next_instruction)) {
-
-                                    /*
-                                    **  NOTE: Idea:
-                                    **  How do we know which variable's value has increased?
-                                    **  We check the following:
-                                    **      Stored value has to be the same as add result, and it has to be stored at same place where we allocated memory first.
-                                    **      How do we check that?
-                                    **           That pointer has to be the same as the load instruction's operand
-                                     */
 
                                     Value* stored_value = store_instruction->getOperand(0);
                                     Value* ptr_to_storage = store_instruction->getOperand(1);
 
                                     if (stored_value == binary_op  && ptr_to_storage == load_ptr) {
-                                        // If this is true, we will remember that variable at the original allocated memory space was increased by 1.
-                                        // But we need to somehow get that variable.
 
+                                        // Instead of just increasing this by 1 (which corresponds to an increment), we will increase it by the add's right operand, so we can cover += 2, += 3, etc.
+                                        if(ConstantInt* ci_right_op = dyn_cast<ConstantInt>(right_operand)) {
+                                            PatternCounts[load_ptr] += ci_right_op->getSExtValue();
+                                        }
 
-                                        // That variable is on the left side of the current load_instr!
-                                        // However, for llvm these are different temporary variables, even though they all represent the same var (x for example), and we want map that has [x, 2] for example.
-                                        // This is problematic
-                                             // We can store ptr %2 (load_instructions pointer operand) as a key! That way we won't save different states of x as different temporary variables,
-                                             // instead we will always know that its that one.
-
-                                        PatternCounts[load_ptr] += 1;
                                     }
                                 }
                             }
@@ -404,8 +391,6 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
 
                                 // Create the load instruction that loads the stored value and then our custom add instruction for that variable.
                                 // After that, store that at the original location.
-                                // TODO: Our current code inserts load and add directly after store.
-                                //       Original llvm code first does the stores and then does loads and adds it seems? Is this even important?
                                 IRBuilder<> builder(store_instruction);
                                 builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
                                 LoadInst* new_load_inst = builder.CreateLoad(stored_value->getType(), ptr_to_storage);
@@ -416,7 +401,6 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                                 // We need a way to skip our custom stores
                                 StoreInst* new_store_inst = builder.CreateStore(new_add_inst, ptr_to_storage);
                                 instruction_to_skip = new_store_inst;
-                                // errs() << "Problematic instruction: " << *instruction_to_skip << "\n";
 
                                 initial_store_count--;
                             }
@@ -441,7 +425,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                         // errs() << "Pattern load to remove: " << *pattern_load << "\n";
                         Instruction* next_instruction = pattern_load->getNextNonDebugInstruction();
                         if (auto* bin_op = dyn_cast<BinaryOperator>(next_instruction)) {
-                            if (bin_op->getOpcode() == Instruction::Add && ConstantInt::get(bin_op->getType(), 1) == bin_op->getOperand(1)) {
+                            if (bin_op->getOpcode() == Instruction::Add) {
                                 // errs() << "Pattern add to remove: " << *bin_op << "\n";
                                 next_instruction = bin_op->getNextNonDebugInstruction();
                                 if (auto* pattern_store = dyn_cast<StoreInst>(next_instruction)) {
@@ -486,11 +470,11 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    MPM.addPass(RHSMovePass());
-                    MPM.addPass(ConvertCompareInstructionsPass());
-                    MPM.addPass(ReplaceCompareInstructionsPass());
-                    MPM.addPass(ReplaceSameOperandsAddWithShlPass());
-                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
+                    // MPM.addPass(RHSMovePass());
+                    // MPM.addPass(ConvertCompareInstructionsPass());
+                    // MPM.addPass(ReplaceCompareInstructionsPass());
+                    // MPM.addPass(ReplaceSameOperandsAddWithShlPass());
+                    // MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
                     MPM.addPass(AllocaCountPass());
                     MPM.addPass(PatternCountPass());
                     MPM.addPass(IncrementInstructionCombiningPass());
