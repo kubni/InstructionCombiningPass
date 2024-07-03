@@ -2,25 +2,26 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Verifier.h"
+#include <llvm/IR/IRBuilder.h>
 
 #include <map>  // TODO: Unordered map?
 #include <unordered_map>
-#include <llvm/IR/IRBuilder.h>
 using namespace llvm;
 
 namespace {
 std::vector<Instruction *> InstructionsToRemove;
 std::unordered_map<Value*, Value *> ValuesMap;
-// std::map<int, int> addInstrCount;
-
+AllocaInst* returnValue;
 int addInstrCount = 0;
+
 
 struct AddInstrCountPass : public PassInfoMixin<AddInstrCountPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
             for (auto &BB : F) {
                 for(auto &I : BB) {
-                    if(isa<AddOperator>(I)) {
+                    if(isa<AllocaInst>(&I)) {
                         addInstrCount++;
                     }   
                 }
@@ -51,26 +52,36 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
             errs() << "Old IR: \n" << F << "\n";
             for (auto &BB : F) {
                 for(auto &I : BB) {
-                    // if(LoadInst *LoadInstr  = dyn_cast<Loa
-                    errs() << "sss" << "\n";
-                    //     ValuesMap[LoadInstr] = LoadInstr->getOperand(0);
-                    // }
                     if (BinaryOperator *BinaryOp = dyn_cast<BinaryOperator>(&I)) {
                         if(isa<AddOperator>(BinaryOp)) {
                             if (auto *Const1 = dyn_cast<ConstantInt>(BinaryOp->getOperand(1))) {
-                                //needed to look for other add instructions
+                                //needed to look for other add instructions that is after one we are one
                                 for(auto nextIt = std::next(BasicBlock::iterator(BinaryOp)); nextIt != BB.end(); ++nextIt) {
-                                    errs() << "aaa" << "\n";
+
+                                    //this is needed to clear all load and store instructions that use variable we dont want
+                                  if (LoadInst *LoadInstr = dyn_cast<LoadInst>(&*nextIt)) {
+                                        if (LoadInstr->getOperand(0) == ValuesMap[BinaryOp]) {
+                                            InstructionsToRemove.push_back(LoadInstr);
+                                        }
+                                    } else if (StoreInst *StoreInstr = dyn_cast<StoreInst>(&*nextIt)) {
+                                        if (StoreInstr->getOperand(1) == ValuesMap[BinaryOp]) {
+                                            InstructionsToRemove.push_back(StoreInstr);
+                                        }
+                                    }
                                     if(BinaryOperator *BinaryOp2 = dyn_cast<BinaryOperator>(&*nextIt)) {
                                         if(isa<AddOperator>(BinaryOp2) && ValuesMap[BinaryOp2->getOperand(0)] == ValuesMap[BinaryOp]) {
                                             IRBuilder<> Builder(BinaryOp2);
-                                            Instruction *NewAdd = (Instruction*) Builder.CreateAdd(BinaryOp2->getOperand(0),ConstantInt::get(Const1->getType(), 2));
-                                            NewAdd->insertAfter(BinaryOp2);
+                                            Builder.SetInsertPoint(&BB, ++Builder.GetInsertPoint());
+                                            //create new add that combines 2 instructions
+                                            Instruction *NewAdd = (Instruction*) Builder.CreateAdd(BinaryOp->getOperand(0),ConstantInt::get(Const1->getType(), 2));
                                             BinaryOp2->replaceAllUsesWith(NewAdd);
+                                            // NewStore->insertAfter(NewAdd);
                                             InstructionsToRemove.push_back(BinaryOp);
+                                            //Needed to remove aloc of variable we dont need
+                                            InstructionsToRemove.push_back((Instruction*) ValuesMap[BinaryOp]);
                                             InstructionsToRemove.push_back(BinaryOp2);                                            
-                                            // changed = true;
-                                            // it = nextIt; // Move iterator to next valid position
+                                            changed = true;
+                                            
                                             break; // Break out of inner loop to continue with outer loop
                                         }
                                     }
@@ -78,10 +89,6 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                             }
                         }
                     }
-
-                    if(changed)
-                        break;
-                    // errs() << "Inst: " <<  I.getnam << "\n";
                         //   %1 = alloca i32, align 4
                         //   %2 = alloca i32, align 4
                         //   %3 = alloca i32, align 4
@@ -107,17 +114,19 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                         //   ret i32 0
                 
                     }
+                        for (Instruction *Instr : InstructionsToRemove) {
+                             Instr->eraseFromParent();
+                         }
                 }
-        }
+                errs() << "New IR: \n" << F << "\n";
+                 // Verify that it is valid IR.
+                if (verifyFunction(F, &errs()))
+                    errs() << "Function " << F.getName() << " is invalid!\n";
+                else
+                    errs() << "Function " << F.getName() << " is valid!\n";
 
-        for (Instruction *Instr : InstructionsToRemove) {
-            Instr->eraseFromParent();
         }
         
-        for (auto &F : M) {
-            errs() << "new IR: \n" << F << "\n";
-        }
-        errs() << "sadas" << "\n";
         return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
         }
     };
@@ -131,7 +140,7 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    // MPM.addPass(AddInstrCountPass()),
+                    MPM.addPass(AddInstrCountPass()),
                     MPM.addPass(InstructionCombiningPass());
                 });
         }
