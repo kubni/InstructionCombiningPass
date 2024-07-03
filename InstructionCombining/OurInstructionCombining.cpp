@@ -44,6 +44,63 @@ void mapVariables(Function &F) {
     }
 }
 
+struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        for (auto &F : M) {
+            errs() << "Old IR: \n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if (auto *CmpInstr = dyn_cast<ICmpInst>(&I)) {
+                        IRBuilder<> Builder(CmpInstr);
+                        Value *LHS = CmpInstr->getOperand(0);
+                        Value *RHS = CmpInstr->getOperand(1);
+                        Value *NewInstr = nullptr;
+
+                        if (auto *RHSConstant = dyn_cast<ConstantInt>(RHS)) {
+                            if (RHSConstant->isZero()) {
+                                switch (CmpInstr->getPredicate()) {
+                                    case ICmpInst::ICMP_SLT:
+                                    case ICmpInst::ICMP_ULT:
+                                        // x < 0 is false for unsigned and x < 0 can be x == 0 for signed
+                                        NewInstr = (Value*) Builder.getFalse();
+                                        break;
+                                    case ICmpInst::ICMP_SGT:
+                                    case ICmpInst::ICMP_UGT:
+                                        // x > 0 can be simplified to x != 0
+                                        NewInstr = Builder.CreateICmpNE(LHS, RHS);
+                                        break;
+                                    case ICmpInst::ICMP_SLE:
+                                    case ICmpInst::ICMP_ULE:
+                                    // x <= 0 can be simplified to x == 0
+                                        NewInstr = Builder.CreateICmpEQ(LHS, RHS);
+                                    break;
+                                    case ICmpInst::ICMP_SGE:
+                                    case ICmpInst::ICMP_UGE:
+                                        // x >= 0 is true for unsigned and x >= 0 can be simplified to true for signed
+                                        NewInstr = (Value*) Builder.getTrue();
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        }
+
+                        if (NewInstr) {
+                            CmpInstr->replaceAllUsesWith(NewInstr);
+                            InstructionsToRemove.push_back(CmpInstr);
+                        }
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+            errs() << "New IR: \n" << F << "\n";
+        }
+        return PreservedAnalyses::all();
+    }
+};
+
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -140,8 +197,9 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    MPM.addPass(AddInstrCountPass()),
-                    MPM.addPass(InstructionCombiningPass());
+                    MPM.addPass(ConvertCompareInstructionsPass());
+                    // MPM.addPass(AddInstrCountPass()),
+                    // MPM.addPass(InstructionCombiningPass());
                 });
         }
     };
