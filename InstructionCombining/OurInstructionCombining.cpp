@@ -15,22 +15,6 @@ std::unordered_map<Value*, Value *> ValuesMap;
 AllocaInst* returnValue;
 int addInstrCount = 0;
 
-
-struct AddInstrCountPass : public PassInfoMixin<AddInstrCountPass> {
-    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
-        for (auto &F : M) {
-            for (auto &BB : F) {
-                for(auto &I : BB) {
-                    if(isa<AllocaInst>(&I)) {
-                        addInstrCount++;
-                    }   
-                }
-            }
-        }
-        return PreservedAnalyses::all();
-    }
-};
-
 void mapVariables(Function &F) {
     for (auto &BB : F) {
         for(auto &I : BB) {
@@ -47,7 +31,7 @@ void mapVariables(Function &F) {
     }
 }
 
-//3.
+//3. Compare instructions are converted from <,>,<=,>= to ==,!= if possible
 struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -109,7 +93,7 @@ struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstr
         return PreservedAnalyses::all();
     }
 };
-
+//4. All cmp instructions on boolean values are replaced with logical ops
 struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -165,7 +149,7 @@ struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstr
         return PreservedAnalyses::all();
     }
 };
-
+//5. add X, X is represented as (X*2) => (X << 1)
 struct ReplaceSameOperandsAddWithShlPass : public PassInfoMixin<ReplaceSameOperandsAddWithShlPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -200,7 +184,7 @@ struct ReplaceSameOperandsAddWithShlPass : public PassInfoMixin<ReplaceSameOpera
         return PreservedAnalyses::all();
     }
 };
-
+//6. Multiplies with a power-of-two constant argument are transformed into shifts.
 struct ReplacePowerOfTwoMullWithShlPass : public PassInfoMixin<ReplacePowerOfTwoMullWithShlPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
@@ -245,6 +229,7 @@ struct ReplacePowerOfTwoMullWithShlPass : public PassInfoMixin<ReplacePowerOfTwo
 struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         bool changed = false;
+        InstructionsToRemove.clear();
         for (auto &F : M) {
             mapVariables(F);
             errs() << "Old IR: \n" << F << "\n";
@@ -287,47 +272,26 @@ struct InstructionCombiningPass : public PassInfoMixin<InstructionCombiningPass>
                             }
                         }
                     }
-                        //   %1 = alloca i32, align 4
-                        //   %2 = alloca i32, align 4
-                        //   %3 = alloca i32, align 4
-                        //   %4 = alloca i32, align 4
-                        //   store i32 0, i32* %1, align 4
-                        //   store i32 1, i32* %2, align 4
-                        //   %5 = load i32, i32* %2, align 4
-                        //   %6 = add nsw i32 %5, 1
-                        //   store i32 %6, i32* %3, align 4
-                        //   %7 = load i32, i32* %3, align 4
-                        //   %8 = add nsw i32 %7, 1
-                        //   store i32 %8, i32* %4, align 4
-                        //   ret i32 0
-                        // ################
-                        //   %1 = alloca i32, align 4
-                        //   %2 = alloca i32, align 4
-                        //   %3 = alloca i32, align 4
-                        //   store i32 0, i32* %1, align 4
-                        //   store i32 1, i32* %2, align 4
-                        //   %4 = load i32, i32* %2, align 4
-                        //   %5 = add nsw i32 %4, 2
-                        //   store i32 %5, i32* %3, align 4
-                        //   ret i32 0
-                
-                    }
-                        for (Instruction *Instr : InstructionsToRemove) {
-                             Instr->eraseFromParent();
-                         }
+   
                 }
-                errs() << "New IR: \n" << F << "\n";
-                 // Verify that it is valid IR.
-                if (verifyFunction(F, &errs()))
-                    errs() << "Function " << F.getName() << " is invalid!\n";
-                else
-                    errs() << "Function " << F.getName() << " is valid!\n";
+                for (Instruction *Instr : InstructionsToRemove) {
+                    Instr->eraseFromParent();
+                    }
+            }
+            errs() << "New IR: \n" << F << "\n";
+                // Verify that it is valid IR.
+            if (verifyFunction(F, &errs()))
+                errs() << "Function " << F.getName() << " is invalid!\n";
+            else
+                errs() << "Function " << F.getName() << " is valid!\n";
 
         }
         
+        if(changed)
+            return PreservedAnalyses::none();
         return PreservedAnalyses::all();  // TODO: Change this if we go back to the old pass manager
-        }
-    };
+    }
+};
 }
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
@@ -338,12 +302,11 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    // MPM.addPass(ConvertCompareInstructionsPass()),
-                    // MPM.addPass(ReplaceCompareInstructionsPass()),
-                    // MPM.addPass(ReplaceSameOperandsAddWithShlPass()),
-                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
-                    // MPM.addPass(AddInstrCountPass()),
-                    // MPM.addPass(InstructionCombiningPass());
+                    MPM.addPass(ConvertCompareInstructionsPass()),
+                    MPM.addPass(ReplaceCompareInstructionsPass()),
+                    MPM.addPass(ReplaceSameOperandsAddWithShlPass()),
+                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass()),
+                    MPM.addPass(InstructionCombiningPass());
                 });
         }
     };
