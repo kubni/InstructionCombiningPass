@@ -41,17 +41,7 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
 
 // TODO: Check if basic example works in a separate function (that isn't main())
 
-/* TODO: This code produces valid IR even when we have x++; y++; x++; but it is semantically not correct, since we increment x 3 times.
- *
- *       We need to differentiate between operations made on x and on y, probably by taking a look at the load and store ops (their ptr operands)
- *
- *
- *    NOTE: Idea: A pass that maps variables to how many sequences of load-store-add we have for them,
- *                In a x++; y++; x++; scenario, we would have 2 load-store-add sequences for x and 1 for y.
- *
- *
- *           1) It would need to be ran after AllocaCountPass and AddCountPass
- *
+/*
  *           2) TODO: There are probably other combinations of code that produce load-add-store that aren't increments
  *
  *           3) NOTE: We could use this to actually allow more general combinations of instructions, for example: x+=2; x+=2; ----> x+=4;
@@ -75,7 +65,6 @@ struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
                     }
 
                     if (auto *load_instruction = dyn_cast<LoadInst>(&I)) {
-                        // TODO: Get operand (ptr)
                         Value* load_ptr = load_instruction->getPointerOperand(); // NOTE: This should be equal to load_instruction->getOperand(0);
 
                         Instruction* next_instruction = I.getNextNonDebugInstruction();
@@ -96,6 +85,7 @@ struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
 
                                     Value* stored_value = store_instruction->getOperand(0);
                                     Value* ptr_to_storage = store_instruction->getOperand(1);
+
 
 
                                     if (stored_value == binary_op  && ptr_to_storage == load_ptr) {
@@ -141,17 +131,16 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
             bool isFirstLoadSaved = false;
             Value* new_add = nullptr;
             Value* first_loaded_value = nullptr;
+
             for (auto &BB : F) {
-
                 StoreInst* instruction_to_skip = nullptr;
-
                 for (auto &I : BB) {
                     // Skip initial allocas:
                     if (initial_alloca_count) {
                         initial_alloca_count--;
                         continue;
                     }
-                   
+
                     // NOTE: Specially for main(), there is an additional store (always the first store coming after allocas) that we want to skip
                     if (F.getName().str() == "main" && !isMainStoreSkipped) {
                         isMainStoreSkipped = true;
@@ -159,14 +148,10 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                         continue;
                     }
 
-                    // Save the store values:
-                    // errs() << "Current I: " << I << "\n";
                     if(initial_store_count > 0) {
                         if (auto *store_instruction = dyn_cast<StoreInst>(&I)) {
                             // We need a way to skip our custom stores that we added in here, so that they don't trigger the if when I becomes that new store instruction.
                             if (store_instruction != instruction_to_skip) {
-
-                                // errs() << "store_instruction: " << *store_instruction << "\n";
 
                                 Value* stored_value = store_instruction->getValueOperand();
                                 Value* ptr_to_storage = store_instruction->getPointerOperand();
@@ -175,10 +160,9 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                                 // After that, store that at the original location.
                                 // TODO: Our current code inserts load and add directly after store.
                                 //       Original llvm code first does the stores and then does loads and adds it seems? Is this even important?
-                                //       FIXME: This code doesn't work properly if we have variable declaration that isn't at the beginning: int x = 0; x++; int z = 0; z++; x++;
                                 IRBuilder<> builder(store_instruction);
                                 builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
-                                LoadInst* new_load_inst = builder.CreateLoad(stored_value->getType(), ptr_to_storage); // TODO: CreateAlignedLoad() ?
+                                LoadInst* new_load_inst = builder.CreateLoad(stored_value->getType(), ptr_to_storage);
                                 Value* new_add_inst = builder.CreateAdd(new_load_inst, ConstantInt::get(stored_value->getType(), PatternCounts.at(new_load_inst->getPointerOperand())));
 
 
@@ -188,27 +172,53 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                                 instruction_to_skip = new_store_inst;
                                 // errs() << "Problematic instruction: " << *instruction_to_skip << "\n";
 
+                                // We add the final load so that return can return it.
+                                // LoadInst* final_load_inst = builder.CreateLoad(new_store_inst->getValueOperand()->getType(), ptr_to_storage);
+
                                 initial_store_count--;
                             }
                         }
                         continue;
                     }
 
-                    // We want to skip the last added load and add, and not all instructions that come after them.
-                    // TODO: If this code doesn't get prettier soon, it doesn't deserve to exist.
-                    if (initial_store_count > -3) {
+                    if(initial_store_count > -3) {
                         initial_store_count--;
-                        continue;
+                        // If we encounter a return instruction here, we stop in order to prevent a segfault:
+                        if (auto* ret_inst = dyn_cast<ReturnInst>(&I)) {
+                            errs() << "New IR: \n" << F << "\n";
+                            return PreservedAnalyses::none(); // TODO: all() ?
+                        } else
+                            continue;
                     }
 
-                    InstructionsToRemove.push_back(&I);
+                   
+
+                    // We just want to remove load-store-adds that are leftover from original code, not all instructions that come after our newly added ones.
+                    if (auto* pattern_load = dyn_cast<LoadInst>(&I)) {
+                        // errs() << "Pattern load to remove: " << *pattern_load << "\n";
+                        Instruction* next_instruction = pattern_load->getNextNonDebugInstruction();
+                        if (auto* bin_op = dyn_cast<BinaryOperator>(next_instruction)) {
+                            if (bin_op->getOpcode() == Instruction::Add && ConstantInt::get(bin_op->getType(), 1) == bin_op->getOperand(1)) {
+                                // errs() << "Pattern add to remove: " << *bin_op << "\n";
+                                next_instruction = bin_op->getNextNonDebugInstruction();
+                                if (auto* pattern_store = dyn_cast<StoreInst>(next_instruction)) {
+                                    // errs() << "Pattern store to remove: " << *pattern_store << "\n";
+                                    InstructionsToRemove.push_back(pattern_store);
+                                    InstructionsToRemove.push_back(bin_op);
+                                    InstructionsToRemove.push_back(pattern_load);
+                                }
+                            }
+                        }
+                    } 
                 }
 
 
                 // Finally, we erase all the instructions that are queued for erasure:
                 for (Instruction* instr : InstructionsToRemove) {
-                    if(instr->isSafeToRemove())
-                        instr->eraseFromParent();
+                    // if(instr->isSafeToRemove()) {
+                        // errs() << "Instruction to be SAFELY removed: " << *instr << "\n";
+                    instr->eraseFromParent();
+                    // }
                 }
             }
             // Print tne new IR
@@ -222,7 +232,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
 
         }
 
-        return PreservedAnalyses::none();  // TODO: Change this if we go back to the old pass manager
+        return PreservedAnalyses::none();
     }
 };
 }
