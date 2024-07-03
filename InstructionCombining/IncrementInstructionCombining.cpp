@@ -3,15 +3,15 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/Verifier.h"
-#include <llvm/IR/IRBuilder.h>
+#include "llvm/IR/IRBuilder.h"
 
-#include <map>  // TODO: Unordered map?
+#include <unordered_map>
 using namespace llvm;
 
 namespace {
 
-std::map<std::string, int> AllocaCounts;
-std::map<Value*, int> PatternCounts;
+std::unordered_map<std::string, int> AllocaCounts;
+std::unordered_map<Value*, int> PatternCounts;
 std::vector<Instruction *> InstructionsToRemove;
 
 
@@ -19,7 +19,6 @@ std::vector<Instruction *> InstructionsToRemove;
 // This pass moves constants to RHS in a binary operation
 struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
-
         for (auto &F : M) {
             errs() << "Old IR: " << F << "\n";
             for (auto &BB : F) {
@@ -33,7 +32,6 @@ struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
                             case Instruction::Add:
                                 if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
                                     IRBuilder<> builder(binary_op);
-                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
                                     Value* new_add = builder.CreateAdd(op2, op1);
                                     binary_op->replaceAllUsesWith(new_add);
                                     InstructionsToRemove.push_back(binary_op);
@@ -42,7 +40,6 @@ struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
                             case Instruction::Mul:
                                 if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
                                     IRBuilder<> builder(binary_op);
-                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
                                     Value* new_mul = builder.CreateMul(op2, op1);
                                     binary_op->replaceAllUsesWith(new_mul);
                                     InstructionsToRemove.push_back(binary_op);
@@ -63,7 +60,7 @@ struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
            // InstructionsToRemove.shrink_to_fit();
            errs() << "New IR: " << F << "\n";
         }
-        return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
     }
 };
 
@@ -84,22 +81,13 @@ struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
                         next_instruction = alloca_instr->getNextNonDebugInstruction();
                     }
                 }
-                break; // TODO: What if we have multiple basic blocks in a function? Are the allocas still at the beginning? FIXME (Currently we ignore that completely even if they are...)
-                                // NOTE: The allocas still happen at the beginning of the function, though it seems that the store instruction happens in the branch, which makes sense, but breaks our algorithm FIXME.
+                break;
             }
         }
         return PreservedAnalyses::all();
     }
 };
 
-// TODO: Check if basic example works in a separate function (that isn't main())
-
-/*
- *           2) TODO: There are probably other combinations of code that produce load-add-store that aren't increments
- *
- *           3) NOTE: We could use this to actually allow more general combinations of instructions, for example: x+=2; x+=2; ----> x+=4;
- *
- * */
 
 
 struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
@@ -225,9 +213,6 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                                 instruction_to_skip = new_store_inst;
                                 // errs() << "Problematic instruction: " << *instruction_to_skip << "\n";
 
-                                // We add the final load so that return can return it.
-                                // LoadInst* final_load_inst = builder.CreateLoad(new_store_inst->getValueOperand()->getType(), ptr_to_storage);
-
                                 initial_store_count--;
                             }
                         }
@@ -296,10 +281,10 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    // MPM.addPass(AllocaCountPass());
-                    // MPM.addPass(PatternCountPass());
-                    // MPM.addPass(IncrementInstructionCombiningPass());
-                    MPM.addPass(RHSMovePass());
+                    // MPM.addPass(RHSMovePass());
+                    MPM.addPass(AllocaCountPass());
+                    MPM.addPass(PatternCountPass());
+                    MPM.addPass(IncrementInstructionCombiningPass());
                 });
         }
     };
