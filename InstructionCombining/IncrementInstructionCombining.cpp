@@ -15,6 +15,22 @@ std::unordered_map<Value*, int> PatternCounts;
 std::vector<Instruction *> InstructionsToRemove;
 
 
+std::unordered_map<Value*, Value *> ValuesMap;
+void mapVariables(Function &F) {
+    for (auto &BB : F) {
+        for(auto &I : BB) {
+            if(isa<LoadInst>(&I)) {
+                ValuesMap[&I] = I.getOperand(0);
+            }
+            if(isa<StoreInst>(&I)) {
+                ValuesMap[I.getOperand(0)] = I.getOperand(1);
+            }
+            if(isa<ZExtInst>(&I)) {
+                ValuesMap[&I] = I.getOperand(0);
+            }
+        }
+    }
+}
 
 // This pass moves constants to RHS in a binary operation
 struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
@@ -64,6 +80,202 @@ struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
     }
 };
 
+struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            errs() << "Old IR: \n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if (auto *CmpInstr = dyn_cast<ICmpInst>(&I)) {
+                        IRBuilder<> Builder(CmpInstr);
+                        Value *LHS = CmpInstr->getOperand(0);
+                        Value *RHS = CmpInstr->getOperand(1);
+                        Value *NewInstr = nullptr;
+
+                        if (auto *RHSConstant = dyn_cast<ConstantInt>(RHS)) {
+                            if (RHSConstant->isZero()) {
+                                switch (CmpInstr->getPredicate()) {
+                                    case ICmpInst::ICMP_SLT:
+                                    case ICmpInst::ICMP_ULT:
+                                        // x < 0 is false for unsigned and x < 0 can be x == 0 for signed
+                                        NewInstr = (Value*) Builder.getFalse();
+                                        break;
+                                    case ICmpInst::ICMP_SGT:
+                                    case ICmpInst::ICMP_UGT:
+                                        // x > 0 can be simplified to x != 0
+                                        NewInstr = Builder.CreateICmpNE(LHS, RHS);
+                                        break;
+                                    case ICmpInst::ICMP_SLE:
+                                    case ICmpInst::ICMP_ULE:
+                                    // x <= 0 can be simplified to x == 0
+                                        NewInstr = Builder.CreateICmpEQ(LHS, RHS);
+                                    break;
+                                    case ICmpInst::ICMP_SGE:
+                                    case ICmpInst::ICMP_UGE:
+                                        // x >= 0 is true for unsigned and x >= 0 can be simplified to true for signed
+                                        NewInstr = (Value*) Builder.getTrue();
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+                        }
+
+                        if (NewInstr) {
+                            CmpInstr->replaceAllUsesWith(NewInstr);
+                            InstructionsToRemove.push_back(CmpInstr);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+//4. All cmp instructions on boolean values are replaced with logical ops
+struct ReplaceCompareInstructionsPass : public PassInfoMixin<ReplaceCompareInstructionsPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:\n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if (auto *CmpInstr = dyn_cast<ICmpInst>(&I)) {
+                        IRBuilder<> Builder(CmpInstr);
+                        Value *LHS = CmpInstr->getOperand(0);
+                        Value *RHS = CmpInstr->getOperand(1);
+                        Value *NewInstr = nullptr;
+
+                        // errs() << "ASds" << *ValuesMap[LHS]->getType() << "\n";
+                        // Check if the comparison is on boolean values (i8) in c
+                        if (ValuesMap[LHS]->getType()->isIntegerTy(1) && ValuesMap[RHS]->getType()->isIntegerTy(1)) {
+                            // errs() << "aaa" << "\n";
+                            switch (CmpInstr->getPredicate()) {
+                            case ICmpInst::ICMP_EQ:
+                                // x == y can be replaced with !(x ^ y )
+                                NewInstr =  Builder.CreateNot(Builder.CreateXor(LHS, RHS));
+                                break;
+                            case ICmpInst::ICMP_NE:
+                                // x != y can be replaced with (x ^ y )
+                                NewInstr = Builder.CreateXor(LHS, RHS);
+                                break;
+                            default:
+                                break;
+                            }
+                        }
+
+                        if (NewInstr) {
+                            CmpInstr->replaceAllUsesWith(NewInstr);
+                            InstructionsToRemove.push_back(CmpInstr);
+                            changed = true;
+                            // CmpInstr->eraseFromParent();
+
+                        }
+
+                     }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+//5. add X, X is represented as (X*2) => (X << 1)
+struct ReplaceSameOperandsAddWithShlPass : public PassInfoMixin<ReplaceSameOperandsAddWithShlPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:\n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if(BinaryOperator* BinaryOp = dyn_cast<BinaryOperator>(&I)) {
+                        IRBuilder<> Builder(&I);
+                        if(BinaryOp->getOpcode() == Instruction::Add) {
+                            if(ValuesMap[BinaryOp->getOperand(0)] == ValuesMap[BinaryOp->getOperand(1)]) {
+                                Value *shiftInstr = Builder.CreateShl(BinaryOp->getOperand(0), 1);
+                                I.replaceAllUsesWith(shiftInstr);
+                                InstructionsToRemove.push_back(&I);
+                                changed= true;
+                            }
+
+                        }
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+//6. Multiplies with a power-of-two constant argument are transformed into shifts.
+struct ReplacePowerOfTwoMullWithShlPass : public PassInfoMixin<ReplacePowerOfTwoMullWithShlPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            mapVariables(F);
+            errs() << "Old IR:\n" << F << "\n";
+            for (auto &BB : F) {
+                for(auto &I : BB) {
+                    if(BinaryOperator* BinaryOp = dyn_cast<BinaryOperator>(&I)) {
+                        IRBuilder<> Builder(&I);
+                        if(BinaryOp->getOpcode() == Instruction::Mul) {
+                            Value *op1 = BinaryOp->getOperand(0);
+                            Value *op2 = BinaryOp->getOperand(1);
+                            if(ConstantInt *constOp = dyn_cast<ConstantInt>(op2)) {
+                                if (constOp->getValue().isPowerOf2()) {
+                                    unsigned int shiftAmount = constOp->getValue().logBase2();
+                                    Value *shiftInstr = Builder.CreateShl(op1, shiftAmount);
+                                    I.replaceAllUsesWith(shiftInstr);
+                                    InstructionsToRemove.push_back(&I);
+                                    changed = true;
+                                }
+                            }
+
+                        }
+
+                    }
+                }
+            }
+            for (Instruction *Instr : InstructionsToRemove) {
+                 Instr->eraseFromParent();
+            }
+
+            errs() << "New IR: \n" << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+
+
+    
 
 struct AllocaCountPass : public PassInfoMixin<AllocaCountPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
@@ -127,8 +339,6 @@ struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
                                     Value* stored_value = store_instruction->getOperand(0);
                                     Value* ptr_to_storage = store_instruction->getOperand(1);
 
-
-
                                     if (stored_value == binary_op  && ptr_to_storage == load_ptr) {
                                         // If this is true, we will remember that variable at the original allocated memory space was increased by 1.
                                         // But we need to somehow get that variable.
@@ -144,13 +354,8 @@ struct PatternCountPass : public PassInfoMixin<PatternCountPass> {
                                     }
                                 }
                             }
-                        } else {
-                            continue; //TODO: This will do the same thing as the continue in load's else block, since we haven't moved I to be the next_instruction?
                         }
-                    } else {
-                        continue;
                     }
-
                 }
             }
         }
@@ -224,7 +429,7 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
                         // If we encounter a return instruction here, we stop in order to prevent a segfault:
                         if (auto* ret_inst = dyn_cast<ReturnInst>(&I)) {
                             errs() << "New IR: \n" << F << "\n";
-                            return PreservedAnalyses::none(); // TODO: all() ?
+                            return PreservedAnalyses::none();
                         } else
                             continue;
                     }
@@ -281,7 +486,11 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    // MPM.addPass(RHSMovePass());
+                    MPM.addPass(RHSMovePass());
+                    MPM.addPass(ConvertCompareInstructionsPass());
+                    MPM.addPass(ReplaceCompareInstructionsPass());
+                    MPM.addPass(ReplaceSameOperandsAddWithShlPass());
+                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
                     MPM.addPass(AllocaCountPass());
                     MPM.addPass(PatternCountPass());
                     MPM.addPass(IncrementInstructionCombiningPass());
