@@ -456,10 +456,133 @@ struct IncrementInstructionCombiningPass : public PassInfoMixin<IncrementInstruc
 
         }
 
+        InstructionsToRemove.clear();
+        return PreservedAnalyses::none();
+    }
+};
+
+
+// int x = 0;   x += 4;   -------> int x = 4;
+/*
+** NOTE: Idea:
+** For each initial allocated variable we know that there is only one add.
+** We want to use that RHS add operand and change the initial store for that specific variable.
+** We already have PatternCount (which doesn't really count them anymore) that has initial allocated variables mapped to that RHS value
+** That way, we can easily change the store instruction.
+** The problem is how to delete now unnecessary load-add-store that corresponds to that specific variable
+**    NOTE: Idea:
+**                We search for the code and just check if its load-add-store sequence that uses the pointer to that initial allocated value
+**
+**
+ */
+struct InitStoreCombiningPass : public PassInfoMixin<InitStoreCombiningPass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+
+        for (auto &F : M) {
+
+            errs() << "Old IR: " << F << "\n";
+            int initial_alloca_count = AllocaCounts.at(F.getName().str());
+            bool isMainStoreSkipped = false;
+            bool isStoreInstToSkip = false;
+
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    // Skip the initial alloca instructions and that specific main store instruction if we are in main:
+                    if (initial_alloca_count) {
+                        initial_alloca_count--;
+                        continue;
+                    }
+
+                    if (F.getName().str() == "main" && !isMainStoreSkipped) {
+                        isMainStoreSkipped = true;
+                        // initial_store_count--;
+                        continue;
+                    }
+
+                    // If we are at return instruction now, end the pass
+                    // I think this would happen with empty (just ret) main.
+                    // if (auto* ret_inst = dyn_cast<ReturnInst>(&I))
+                    //     return PreservedAnalyses::all();
+
+                    // We aggressively replace the existing store instructions with our custom new ones.
+                    // They can end up being the same, but it doesn't matter since that way we don't need
+                    // to run the pass 2 times for the ones that actually change.
+
+                    // First, we see at what store inst are we now:
+                    if(auto* current_store_inst = dyn_cast<StoreInst>(&I)) {
+                        // We don't want to do this if we are currently at the previously newly created store inst:
+                        if(!isStoreInstToSkip) {
+
+                            // We schedule this initial store for deletion:
+                            InstructionsToRemove.push_back(current_store_inst);
+
+                            // We don't need the stored value directly, only its type, since we will be replacing it.
+                            Value* ptr_to_storage = current_store_inst->getPointerOperand();
+
+                            IRBuilder<> builder (current_store_inst);
+                            builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
+
+                            Value* ci_value = ConstantInt::get(current_store_inst->getValueOperand()->getType(), PatternCounts.at(ptr_to_storage));
+                            StoreInst* new_store_inst = builder.CreateStore(ci_value, ptr_to_storage);
+                            // errs() << "Newly created store instruction: " << *new_store_inst << "\n";
+                            isStoreInstToSkip = true;
+
+                            continue;
+                        } else {
+                            // Reset;
+                            isStoreInstToSkip = false;
+                        }
+                    } else if (auto* current_load_inst = dyn_cast<LoadInst>(&I)) {
+                       // This means that we passed all store instructions
+                       // Now we check for the pattern and delete those load-add-store instructions,
+                       // but ONLY if they correspond to x++; or x += <something>.
+                       Value* load_ptr = current_load_inst->getPointerOperand();
+                       Instruction* next_instruction = I.getNextNonDebugInstruction();
+                       if (auto *binary_op = dyn_cast<BinaryOperator>(next_instruction)) {
+                            if(binary_op->getOpcode() == Instruction::Add) {
+                                next_instruction = next_instruction->getNextNonDebugInstruction();
+
+                                if (auto *store_instruction = dyn_cast<StoreInst>(next_instruction)) {
+
+                                    // Important: We want to skip this one, like the ones we created,
+                                    // in order not to trigger the if above (which should only trigger for initial stores)
+                                    // TODO: Does the reset above work for this too?
+                                    isStoreInstToSkip = true;
+
+                                    Value* stored_value = store_instruction->getOperand(0);
+                                    Value* ptr_to_storage = store_instruction->getOperand(1);
+
+                                    if (stored_value == binary_op  && ptr_to_storage == load_ptr) {
+                                        InstructionsToRemove.push_back(store_instruction);
+                                        InstructionsToRemove.push_back(binary_op);
+                                        InstructionsToRemove.push_back(current_load_inst);
+                                    }
+                                }
+                            }
+                       }
+                    }
+                }
+
+                for (Instruction* i :  InstructionsToRemove) {
+                    i->eraseFromParent();
+                }
+            }
+
+            errs() << "New IR: " << F << "\n";
+            // Verify that it is valid IR.
+            if (verifyFunction(F, &errs()))
+                errs() << "Function " << F.getName() << " is invalid!\n";
+            else
+                errs() << "Function " << F.getName() << " is valid!\n";
+
+
+        }
+        InstructionsToRemove.clear();
         return PreservedAnalyses::none();
     }
 };
 }
+
 
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
@@ -478,6 +601,7 @@ llvmGetPassPluginInfo() {
                     MPM.addPass(AllocaCountPass());
                     MPM.addPass(PatternCountPass());
                     MPM.addPass(IncrementInstructionCombiningPass());
+                    MPM.addPass(InitStoreCombiningPass());
                 });
         }
     };
