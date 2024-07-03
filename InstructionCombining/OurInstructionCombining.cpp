@@ -31,6 +31,61 @@ void mapVariables(Function &F) {
     }
 }
 
+//1. If a binary operator has a constant operand, it is moved to the RHS
+struct RHSMovePass : public PassInfoMixin<RHSMovePass> {
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        bool changed = false;
+        InstructionsToRemove.clear();
+        for (auto &F : M) {
+            errs() << "Old IR: " << F << "\n";
+            for (auto &BB : F) {
+                for (auto &I : BB) {
+                    if(auto* binary_op = dyn_cast<BinaryOperator>(&I)) {
+                        // We only do a move to RHS if we have Mul or Add
+                        auto opcode = binary_op->getOpcode();
+                        Value* op1 = binary_op->getOperand(0);
+                        Value* op2 = binary_op->getOperand(1);
+                        switch(opcode) {
+                            case Instruction::Add:
+                                if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
+                                    IRBuilder<> builder(binary_op);
+                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
+                                    Value* new_add = builder.CreateAdd(op2, op1);
+                                    binary_op->replaceAllUsesWith(new_add);
+                                    InstructionsToRemove.push_back(binary_op);
+                                    changed = true;
+                                }
+                                break;
+                            case Instruction::Mul:
+                                if (isa<ConstantInt>(op1) && !isa<ConstantInt>(op2)) {
+                                    IRBuilder<> builder(binary_op);
+                                    // builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
+                                    Value* new_mul = builder.CreateMul(op2, op1);
+                                    binary_op->replaceAllUsesWith(new_mul);
+                                    InstructionsToRemove.push_back(binary_op);
+                                    changed = true;
+                                }
+                                break;
+
+                            default:
+                                continue;
+                        }
+                    }
+                }
+            }
+            for (Instruction* i : InstructionsToRemove) {
+                i->eraseFromParent();
+            }
+           // We also need to remove the instruction from the vector, in order for it to be clean for next passes to use.
+           // InstructionsToRemove.shrink_to_fit();
+           errs() << "New IR: " << F << "\n";
+        }
+        if(changed)
+            return PreservedAnalyses::none();
+        return PreservedAnalyses::all();
+    }
+};
+
 //3. Compare instructions are converted from <,>,<=,>= to ==,!= if possible
 struct ConvertCompareInstructionsPass : public PassInfoMixin<ConvertCompareInstructionsPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
@@ -302,6 +357,7 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
+                    MPM.addPass(RHSMovePass()),
                     MPM.addPass(ConvertCompareInstructionsPass()),
                     MPM.addPass(ReplaceCompareInstructionsPass()),
                     MPM.addPass(ReplaceSameOperandsAddWithShlPass()),
