@@ -500,14 +500,6 @@ struct InitStoreCombiningPass : public PassInfoMixin<InitStoreCombiningPass> {
                         continue;
                     }
 
-                    // If we are at return instruction now, end the pass
-                    // I think this would happen with empty (just ret) main.
-                    // if (auto* ret_inst = dyn_cast<ReturnInst>(&I))
-                    //     return PreservedAnalyses::all();
-
-                    // We aggressively replace the existing store instructions with our custom new ones.
-                    // They can end up being the same, but it doesn't matter since that way we don't need
-                    // to run the pass 2 times for the ones that actually change.
 
                     // First, we see at what store inst are we now:
                     if(auto* current_store_inst = dyn_cast<StoreInst>(&I)) {
@@ -536,7 +528,6 @@ struct InitStoreCombiningPass : public PassInfoMixin<InitStoreCombiningPass> {
 
                             Value* ci_value = ConstantInt::get(current_store_inst->getValueOperand()->getType(), InitialStoredValues.at(ptr_to_storage) + PatternCounts.at(ptr_to_storage));
                             StoreInst* new_store_inst = builder.CreateStore(ci_value, ptr_to_storage);
-                            // errs() << "Newly created store instruction: " << *new_store_inst << "\n";
                             isStoreInstToSkip = true;
 
                             continue;
@@ -558,7 +549,6 @@ struct InitStoreCombiningPass : public PassInfoMixin<InitStoreCombiningPass> {
 
                                     // Important: We want to skip this one, like the ones we created,
                                     // in order not to trigger the if above (which should only trigger for initial stores)
-                                    // TODO: Does the reset above work for this too?
                                     isStoreInstToSkip = true;
 
                                     Value* stored_value = store_instruction->getOperand(0);
