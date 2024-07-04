@@ -605,11 +605,11 @@ llvmGetPassPluginInfo() {
         .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
-                    // MPM.addPass(RHSMovePass());
-                    // MPM.addPass(ConvertCompareInstructionsPass());
-                    // MPM.addPass(ReplaceCompareInstructionsPass());
-                    // MPM.addPass(ReplaceSameOperandsAddWithShlPass());
-                    // MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
+                    MPM.addPass(RHSMovePass());
+                    MPM.addPass(ConvertCompareInstructionsPass());
+                    MPM.addPass(ReplaceCompareInstructionsPass());
+                    MPM.addPass(ReplaceSameOperandsAddWithShlPass());
+                    MPM.addPass(ReplacePowerOfTwoMullWithShlPass());
                     MPM.addPass(AllocaCountPass());
                     MPM.addPass(PatternCountPass());
                     MPM.addPass(IncrementInstructionCombiningPass());
