@@ -12,6 +12,7 @@ namespace {
 
 std::unordered_map<std::string, int> AllocaCounts;
 std::unordered_map<Value*, int> PatternCounts;
+std::unordered_map<Value*, int> InitialStoredValues;
 std::vector<Instruction *> InstructionsToRemove;
 
 
@@ -516,13 +517,24 @@ struct InitStoreCombiningPass : public PassInfoMixin<InitStoreCombiningPass> {
                             // We schedule this initial store for deletion:
                             InstructionsToRemove.push_back(current_store_inst);
 
-                            // We don't need the stored value directly, only its type, since we will be replacing it.
+                            // We need to store the initial stored value, because of the following case:
+                            /**
+                             *    int x = 5;
+                             *    x += 3;
+                             *
+                             *    This should be int x = 8;
+                             *    If we don't remember the initial stored value, we would just overwrite it with 3.
+                             */
+                            Value* stored_value = current_store_inst->getValueOperand();
                             Value* ptr_to_storage = current_store_inst->getPointerOperand();
+                            if (ConstantInt* ci_stored_value = dyn_cast<ConstantInt>(stored_value)) {
+                                InitialStoredValues[ptr_to_storage] = ci_stored_value->getSExtValue();
+                            }
 
                             IRBuilder<> builder (current_store_inst);
                             builder.SetInsertPoint(&BB, ++builder.GetInsertPoint());
 
-                            Value* ci_value = ConstantInt::get(current_store_inst->getValueOperand()->getType(), PatternCounts.at(ptr_to_storage));
+                            Value* ci_value = ConstantInt::get(current_store_inst->getValueOperand()->getType(), InitialStoredValues.at(ptr_to_storage) + PatternCounts.at(ptr_to_storage));
                             StoreInst* new_store_inst = builder.CreateStore(ci_value, ptr_to_storage);
                             // errs() << "Newly created store instruction: " << *new_store_inst << "\n";
                             isStoreInstToSkip = true;
